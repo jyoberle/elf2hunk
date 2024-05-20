@@ -1,6 +1,7 @@
 /*
 	Copyright � 1995-2017, The AROS Development Team. All rights reserved.
 	Modified 2018-2021, Bartman/Abyss
+	Modified 2024, JOB (OS3.1 bug limiting hunk reloc count to 65537)
 	$Id$
 */
 
@@ -27,6 +28,10 @@
 // Linux does not have O_BINARY - petmac
 #ifndef O_BINARY
 	#define O_BINARY 0
+#endif
+
+#if OPTION_LIMIT_RELOC_SIZE
+	#define MAX_RELOC_SIZE 65535
 #endif
 
 #define F_VERBOSE       (1 << 0)
@@ -704,6 +709,23 @@ int sym_dump(int hunk_fd, struct elfheader* eh, struct sheader *sh, struct hunkh
 	return 1;
 }
 
+#if OPTION_LIMIT_RELOC_SIZE
+static void fcnt_write_reloc32(int hunk_fd, struct hunkheader **hh, int h, int i, int count, int shid)
+{
+	wlong(hunk_fd, count);
+	D(bug("\t  %d relocations relative to Hunk %d\n", count, hh[shid]->hunk));
+	/* Convert from ELF hunk ID to AOS hunk ID */
+	wlong(hunk_fd, hh[shid]->hunk);
+	for(; count > 0; i++, count--) {
+		char* symbol = hh[h]->reloc[i].symbol;
+		char* demangled = cplus_demangle_v3(symbol, 0);
+		D(bug("\t\t%d: 0x%08x %s\n", i, (int)hh[h]->reloc[i].offset, demangled ? demangled : symbol));
+		free(demangled);
+		wlong(hunk_fd, hh[h]->reloc[i].offset);
+	}
+}
+#endif
+
 static void reloc_dump(int hunk_fd, struct hunkheader **hh, int h)
 {
 	int i;
@@ -724,6 +746,24 @@ static void reloc_dump(int hunk_fd, struct hunkheader **hh, int h)
 			if(hh[h]->reloc[count].shid != shid)
 				break;
 		count -= i;
+
+#if OPTION_LIMIT_RELOC_SIZE
+		int max_reloc_cnt = count/MAX_RELOC_SIZE;
+		int sub_count_remainder = count % MAX_RELOC_SIZE;
+		int j;
+		
+		for(int j=0;j < max_reloc_cnt;j++)
+		{
+			fcnt_write_reloc32(hunk_fd,hh,h,i,MAX_RELOC_SIZE,shid);
+			i += MAX_RELOC_SIZE; /* adjust i */			
+		}
+		
+		if(sub_count_remainder != 0)
+		{
+			fcnt_write_reloc32(hunk_fd,hh,h,i,sub_count_remainder,shid);
+			i += sub_count_remainder; /* adjust i */
+		}
+#else
 		wlong(hunk_fd, count);
 		D(bug("\t  %d relocations relative to Hunk %d\n", count, hh[shid]->hunk));
 		/* Convert from ELF hunk ID to AOS hunk ID */
@@ -735,6 +775,7 @@ static void reloc_dump(int hunk_fd, struct hunkheader **hh, int h)
 			free(demangled);
 			wlong(hunk_fd, hh[h]->reloc[i].offset);
 		}
+#endif
 	}
 	wlong(hunk_fd, 0);
 }
